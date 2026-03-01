@@ -1,84 +1,172 @@
-# AWS Full Course | Deploy a Scalable NodeJS PostgreSQL & NGINX App 🚀  
-
-Learn how to confidently navigate the **AWS ecosystem** by deploying a **real-world full-stack application** on **EC2, RDS, S3, and ALB** from scratch! This hands-on course takes you through every step of the **AWS deployment process**, including learning about **CI/CD, security best practices, database backups, and auto-scaling**—without any prior cloud experience needed!  
+A **production-grade URL shortener** built with **Node.js + Express + PostgreSQL**, scalably deployed on **AWS** using **EC2, RDS, ALB, and Nginx**—automated end-to-end with a single bash script.
 
 ---
 
-### **The Course Includes**  
-🔥 2 hours of on-demand video.  
-⭐️ Step-by-step AWS deployment guide.  
-🧪 Hands-on experience with real AWS services.  
-🏆 A fully deployed project by the end of the course!  
+##  What's in This Repo
+
+### Application — URL Shortener API
+
+A lightweight RESTful API that shortens URLs and serves redirects.
+
+| File | Description |
+|---|---|
+| `src/index.js` | Express app entry point, starts server on `PORT` (default `3000`) |
+| `src/routes.js` | API routes: `POST /shorten`, `GET /go/:path`, `GET /` (ALB health check) |
+| `src/db.js` | PostgreSQL connection pool via `pg`, reads credentials from `.env` |
+| `src/utils.js` | Generates random three-word short paths (e.g. `apple.vulture.monkey`) |
+| `tests/urlShortener.test.js` | Jest + Supertest integration tests |
+
+**Tech stack:** Node.js · Express · PostgreSQL (`pg`) · `dotenv` · `cors` · Jest · Supertest
+
+### API Endpoints
+
+```
+POST /shorten          — Accepts { "originalUrl": "..." }, returns { "shortUrl": "/go/..." }
+GET  /go/:path         — Redirects to the original URL
+GET  /                 — Health check (returns 200 OK for ALB)
+```
+
+### AWS Infrastructure
+
+The app is **scalably deployed on AWS** using the following services:
+
+| Service | Role |
+|---|---|
+| **EC2** (Amazon Linux 2023, `t2.micro`) | Runs the Node.js application |
+| **RDS** (PostgreSQL, `db.t4g.micro`) | Managed PostgreSQL database, privately networked |
+| **ALB** (Application Load Balancer) | Distributes traffic across EC2 instances, exposes a public DNS |
+| **Nginx** | Reverse proxy on EC2, forwards port 80 → Node.js on port 3000 |
+| **PM2** | Process manager — keeps the app alive and auto-restarts on reboot |
+| **VPC / Security Groups** | Private networking between EC2 and RDS; ALB-only inbound traffic to EC2 |
+
+### Architecture
+
+```
+Internet
+   │
+   ▼
+AWS ALB  (public DNS, port 80/443)
+   │
+   ▼
+EC2 Instance  (Amazon Linux 2023)
+   ├── Nginx  (reverse proxy, port 80 → 3000)
+   └── Node.js + PM2  (port 3000)
+         │
+         ▼
+   RDS PostgreSQL  (private subnet, port 5432)
+```
 
 ---
 
-### **Requirements**  
-✅ No prior AWS experience is needed!  
-✅ Basic familiarity with **JavaScript/Node.js/SQL** is helpful but not required.  
-✅ Any computer (Windows, macOS, Linux) works—we’ll set up everything together.  
+##  Automated Deployment — `start.sh`
+
+The entire EC2 setup is automated by a single **bash script** (`start.sh`). After SSH-ing into a fresh EC2 instance, you upload and run it once — it handles everything:
+
+1. **System update** — `dnf update` to patch the OS.
+2. **Install dependencies** — installs `git`, `curl`, and `nginx` via `dnf`.
+3. **Install Node.js 18** — pulls from the NodeSource RPM repository.
+4. **Clone or update the repo** — clones into `/var/www/myapp`; if the directory already exists, it resets and pulls the latest `main` branch instead (zero-downtime redeploys).
+5. **Install npm packages** — runs `npm install` inside the app directory.
+6. **Create `.env`** — writes database credentials (host, user, password, port) to `/var/www/myapp/.env` if one doesn't already exist.
+7. **Configure Nginx** — writes a reverse-proxy config to `/etc/nginx/conf.d/myapp.conf` that forwards all HTTP traffic on port 80 to `localhost:3000`, passing the correct `Host`, `X-Real-IP`, and `X-Forwarded-For` headers.
+8. **Restart & enable Nginx** — applies the new config and enables Nginx to start on boot via `systemctl`.
+9. **Start app with PM2** — installs PM2 globally, starts `src/index.js` as `myapp`, saves the process list, and registers a `systemd` startup hook so the app survives reboots.
+
+**To deploy, transfer the script and run it:**
+
+```sh
+# Secure the key and copy the script to EC2
+chmod 400 /path/to/your-key.pem
+scp -i /path/to/your-key.pem start.sh ec2-user@<EC2-PUBLIC-IP>:/home/ec2-user/
+
+# SSH in and execute
+ssh -i /path/to/your-key.pem ec2-user@<EC2-PUBLIC-IP>
+chmod +x start.sh && ./start.sh
+```
+
+> **Note:** `start.sh` contains sensitive credentials and is excluded from version control via `.gitignore`.
+
+**Useful commands once deployed:**
+
+```sh
+pm2 list                          # Check running processes
+pm2 logs --lines 100              # Tail app logs
+cat ~/.pm2/logs/myapp-error.log   # View error logs
+sudo nginx -t                     # Validate Nginx config
+sudo systemctl restart nginx      # Restart Nginx
+```
 
 ---
 
-### **Description**  
+## Database Setup (RDS PostgreSQL)
 
-#### **Why take this AWS course?**  
-This course is designed for **absolute beginners** and **self-taught developers** who want to gain confidence working with AWS. Unlike traditional cloud courses that drown you in theory, we take a **practical, hands-on approach**—deploying a real app from scratch while covering AWS fundamentals **along the way**.  
+Once connected to your RDS instance via EC2, create the database and table:
 
-By the end of this course, you’ll have:  
-✅ A fully deployed **Node.js backend** running on **AWS EC2**.  
-✅ A secure **PostgreSQL database** hosted on **AWS RDS**.  
-✅ A **production-ready API** accessible via an **AWS Application Load Balancer (ALB)**.  
-✅ Extra nowledge of **AWS CI/CD, S3 backups, auto-scaling, and CloudWatch monitoring**.  
+```sql
+CREATE DATABASE url_shortener;
+\c url_shortener;
 
-If you can **deploy and manage an app on AWS**, you can figure out the rest of the million other AWS services!  
+CREATE TABLE urls (
+    id           SERIAL PRIMARY KEY,
+    short_path   TEXT UNIQUE NOT NULL,
+    original_url TEXT NOT NULL
+);
+```
 
----
+Connect to RDS from inside your EC2 instance:
 
-### **What You’ll Build**  
-
-- **Chapter 1:** Introduction to AWS, EC2, and RDS – Setting up a **PostgreSQL database** and launching an **EC2 instance**.  
-- **Chapter 2:** Deploying a **Node.js backend** on EC2, connecting it to **RDS**, and testing API endpoints.  
-- **Chapter 3:** Setting up **Nginx as a reverse proxy** to serve our backend.  
-- **Chapter 4:** Configuring an **AWS Application Load Balancer (ALB)** for traffic distribution.  
-
----
-
-### **What You’ll Learn**  
-- **How to launch an EC2 instance and deploy a Node.js backend.**  
-- **Setting up an RDS PostgreSQL database and securing connections.**  
-- **Using Nginx as a reverse proxy for production deployments.**  
-- **Creating an AWS Application Load Balancer (ALB) for high availability.**  
-
-And at the end, I discuss the extra steps you could take on your AWS adventure, including:
-
-- **Automating RDS backups to S3 with AWS Lambda & CloudWatch.**  
-- **Building a CI/CD pipeline with GitHub Actions, S3, and AWS CodeDeploy.**  
-- **Configuring Auto-Scaling to handle high traffic loads.**  
-- **Using the AWS JavaScript SDK to manage cloud resources programmatically.**  
+```sh
+psql -h <your-rds-endpoint> -U url_shortener -d url_shortener
+```
 
 ---
 
-#### **Why am I the right teacher for you?**  
-Hi, I’m James! I’ve taught **over 500,000 people** how to code and launch their careers in tech. I know how overwhelming AWS can feel at first—that’s why I’ve designed this course to be **clear, structured, and beginner-friendly**.  
+##  Running Locally
 
-Unlike traditional cloud certification courses, this course focuses on **real-world AWS skills** that you can apply immediately. You’ll gain hands-on experience deploying, securing, and automating cloud applications **from scratch**.  
+### Prerequisites
+- Node.js
+- PostgreSQL (running locally)
 
-With **over 10 years of experience** teaching programming and cloud deployment, I know how to break down complex topics into **simple, actionable steps**. Let’s get you AWS-ready!  
+### Steps
 
----
+```sh
+git clone https://github.com/jamezmca/aws-full-course.git
+cd aws-full-course
+npm install
+```
 
-### **Instructor**  
-James holds an **Honors degree in Civil Engineering** but pivoted to **software development** after self-teaching programming. With over **10 years of private tutoring experience**, he specializes in making **complex topics easy to understand**.  
+Create a `.env` file:
 
-James also runs a **YouTube channel** where he teaches full-stack development, cloud deployment, and DevOps best practices.  
+```env
+DB_USER=postgres
+DB_HOST=localhost
+DB_NAME=url_shortener
+DB_PASSWORD=your_password
+DB_PORT=5432
+PORT=3000
+```
 
-Learn more at [smoljames.com](https://www.smoljames.com).  
+Start the app:
 
----
+```sh
+npm run dev
+```
 
-### **Get Started Today!**  
-🚀 **No prior cloud experience? No problem!** This course will walk you through every step, so you’ll **never feel lost**.  
-🔥 **By the end, you’ll have a fully deployed app on AWS—and the confidence to build more!**  
+### Test the API
 
-🔗 **Start your AWS journey [here!](https://youtu.be/H93Vhy6pmow)**  
+```sh
+# Shorten a URL
+curl -X POST http://localhost:3000/shorten \
+     -H "Content-Type: application/json" \
+     -d '{"originalUrl": "https://example.com"}'
+
+# Follow a short URL
+curl -i http://localhost:3000/go/apple.vulture.monkey
+```
+
+### Run Tests
+
+```sh
+npm test
+```
 
