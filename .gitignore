@@ -1,6 +1,5 @@
 node_modules
 .env
-start.sh
 *.pem
 
 # Instruction / course notes files
